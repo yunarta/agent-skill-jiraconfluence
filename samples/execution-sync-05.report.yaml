@@ -1,0 +1,87 @@
+schema_version: report.v1
+report_id: ARC-001-jira-crud-skill-SPR-002-execution-sync-05
+arc_id: ARC-001-example
+sprint_id: SPR-002
+stage: Execution Sync
+status: draft
+report_type: execution_sync
+title: Sprint 2 demo replication into Jira
+summary:
+  executive: >-
+    The current local Agentic Scrum artifact set was promoted into Jira as a
+    demo-ready issue inventory on the live EXAMPLE project.
+  outcome: >-
+    Demo completeness was proven with a safe Jira hierarchy that preserved
+    Epic, Story, Task, Work Unit, Sprint, report, state, and decision artifacts.
+context:
+  defaults_chosen:
+    - Use the existing canonical project EXAMPLE as the demo replication target.
+    - Represent the arc with labels plus one anchor epic instead of a new project-admin surface.
+    - Keep only hierarchy links already verified on the tenant.
+  blockers:
+    - Jira does not expose a native subproject model in this tenant.
+decisions:
+  - id: D-001
+    statement: Use labels and one anchor epic to represent the arc during demo replication.
+    rationale: This avoids inventing an unsupported project hierarchy.
+risks:
+  - id: R-001
+    statement: Sprint names are not globally unique in the tenant.
+    severity: medium
+  - id: R-002
+    statement: Unsupported top-level parent links can fail on team-managed projects.
+    severity: medium
+next_actions:
+  - id: A-001
+    statement: Keep sprint identity by id instead of name.
+  - id: A-002
+    statement: Move report publication into Confluence instead of Jira for future iterations.
+artifacts:
+  - kind: jira-epic
+    key: EXAMPLE-3
+    summary: E-001 Jira skill foundation
+  - kind: jira-story
+    key: EXAMPLE-4
+    summary: S-001 Jira release 1
+  - kind: jira-sprint
+    id: 5
+    name: EXAMPLE Sprint 2
+sections:
+  - title: Execution Results
+    markdown: |-
+      - Existing demo anchor preserved in Jira.
+      - Sprint artifact set is available in Jira, including the new `EXAMPLE Sprint 2`.
+      - Task, work-unit, report, state, and decision artifacts were replicated successfully.
+  - title: Evidence Summary
+    markdown: |-
+      - Total replicated Jira issues with label `demo-replica`: `28`
+      - Verified hierarchy examples include Story under Epic and Work Unit under Task.
+      - Verified report artifact example: `EXAMPLE-24`
+  - title: Mapping Used For Demo
+    markdown: |-
+      - Arc -> Jira project context `EXAMPLE` plus labels
+      - Epic focus -> Jira Epic
+      - Story artifact -> Jira Story
+      - Task artifact -> Jira Task
+      - Work Unit -> Jira Subtask
+      - Sprint artifact -> Jira Sprint
+traceability:
+  source_path: reports/example-execution-sync.md
+  source_type: local-markdown-report
+  upstream_jira_keys:
+    - EXAMPLE-3
+    - EXAMPLE-4
+    - EXAMPLE-24
+  confluence_page_id: null
+  confluence_page_url: null
+  labels:
+    - arc-001
+    - sprint-002
+    - execution-sync
+publisher:
+  render_target: confluence
+  renderer_version: 0.1.0
+  publish_mode: draft
+---
+This sample keeps the canonical report data in the first YAML document while
+allowing narrative or extra publish notes to live in a second document.
