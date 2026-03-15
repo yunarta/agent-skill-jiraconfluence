@@ -57,8 +57,177 @@ def _summarize_jira(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]],
     summary = f"Jira {entity} {action} completed for {target}."
     if status is not None:
         summary = f"Jira {entity} {action} returned HTTP {status} for {target}."
-
     response = payload.get("response")
+
+    if entity == "sprint" and action in {"add-items", "remove-items"}:
+        issue_count = 0
+        request_payload = payload.get("payload")
+        if isinstance(request_payload, dict):
+            issues = request_payload.get("issues")
+            if isinstance(issues, list):
+                issue_count = len(issues)
+        summary = f"Jira sprint {action} returned HTTP {status} for {target} with {issue_count} issues."
+
+    if entity == "sprint" and action in {"start", "complete", "finish"}:
+        verb = "start" if action == "start" else "complete"
+        summary = f"Jira sprint {verb} returned HTTP {status} for {target}."
+
+    if entity == "transition" and action == "list" and isinstance(response, dict):
+        transitions = response.get("transitions", [])
+        summary = f"Jira transition list returned HTTP {status} for {target} with {len(transitions)} transitions."
+        if not transitions:
+            anomalies.append(
+                {
+                    "code": "no_transitions_available",
+                    "severity": "medium",
+                    "message": f"No workflow transitions were returned for {target}.",
+                }
+            )
+            _append_next_action(next_actions, "Double-check the issue status and workflow before attempting a transition.")
+
+    if entity == "transition" and action == "execute":
+        summary = f"Jira transition execute returned HTTP {status} for {target}."
+        available = []
+        if isinstance(response, dict):
+            available = response.get("availableTransitions", [])
+        if available:
+            _append_next_action(next_actions, "If the new status was not the intended one, review the available transition ids returned with the command.")
+
+    if entity == "assignee" and action == "get" and isinstance(response, dict):
+        fields = response.get("fields", {})
+        assignee = fields.get("assignee") if isinstance(fields, dict) else None
+        assignee_name = "<unassigned>"
+        if isinstance(assignee, dict):
+            assignee_name = assignee.get("displayName") or assignee.get("accountId") or assignee_name
+        summary = f"Jira assignee get returned HTTP {status} for {target}: {assignee_name}."
+
+    if entity == "assignee" and action in {"set", "clear"}:
+        verb = "set" if action == "set" else "clear"
+        summary = f"Jira assignee {verb} returned HTTP {status} for {target}."
+
+    if entity == "issuelink" and action == "types" and isinstance(response, dict):
+        link_types = response.get("issueLinkTypes", [])
+        summary = f"Jira issue link types returned HTTP {status} with {len(link_types)} link types."
+
+    if entity == "issuelink" and action == "list" and isinstance(response, dict):
+        fields = response.get("fields", {})
+        issue_links = fields.get("issuelinks", []) if isinstance(fields, dict) else []
+        summary = f"Jira issue link list returned HTTP {status} for {target} with {len(issue_links)} links."
+        if not issue_links:
+            anomalies.append(
+                {
+                    "code": "issue_links_empty",
+                    "severity": "low",
+                    "message": f"No Jira issue links were returned for {target}.",
+                }
+            )
+
+    if entity == "issuelink" and action in {"create", "delete"}:
+        summary = f"Jira issue link {action} returned HTTP {status} for {target}."
+
+    if entity == "comment" and action == "list" and isinstance(response, dict):
+        comments = response.get("comments", [])
+        summary = f"Jira comment list returned HTTP {status} for {target} with {len(comments)} comments."
+        if not comments:
+            anomalies.append(
+                {
+                    "code": "comments_empty",
+                    "severity": "low",
+                    "message": f"No Jira comments were returned for {target}.",
+                }
+            )
+
+    if entity == "comment" and action == "create" and isinstance(response, dict):
+        comment_id = response.get("id", "<unknown>")
+        summary = f"Jira comment create returned HTTP {status} for {target} as comment {comment_id}."
+
+    if entity == "comment" and action == "delete":
+        summary = f"Jira comment delete returned HTTP {status} for {target}."
+
+    if entity == "search" and action == "list" and isinstance(response, dict):
+        issues = response.get("issues", [])
+        summary = f"Jira search list returned HTTP {status} with {len(issues)} issues."
+        if not issues:
+            anomalies.append(
+                {
+                    "code": "search_empty",
+                    "severity": "medium",
+                    "message": "Jira search returned no issues for the current JQL.",
+                }
+            )
+            _append_next_action(next_actions, "Double-check the JQL, field projection, and project scope before assuming there is no matching work.")
+        next_page_token = response.get("nextPageToken")
+        if next_page_token:
+            _append_next_action(next_actions, "Use --next-page-token to continue the search result window if you need more issues.")
+
+    if entity == "epic" and action == "get" and isinstance(response, dict):
+        epic_name = response.get("name") or response.get("summary") or target
+        summary = f"Jira epic get returned HTTP {status} for {epic_name}."
+
+    if entity == "epic" and action == "issues" and isinstance(response, dict):
+        issues = response.get("issues", [])
+        summary = f"Jira epic issues returned HTTP {status} for {target} with {len(issues)} issues."
+        inspection_mode = response.get("inspectionMode")
+        if inspection_mode == "search_fallback":
+            summary = f"Jira epic issues returned HTTP {status} for {target} with {len(issues)} issues via search fallback."
+            anomalies.append(
+                {
+                    "code": "epic_inspection_search_fallback",
+                    "severity": "low",
+                    "message": f"Epic inspection for {target} used search fallback semantics instead of the direct Agile list endpoint.",
+                }
+            )
+            _append_next_action(
+                next_actions,
+                "If the returned Epic membership still looks wrong, double-check the issue parent or Epic link fields on one sample issue.",
+            )
+        if not issues:
+            anomalies.append(
+                {
+                    "code": "epic_issues_empty",
+                    "severity": "medium" if inspection_mode == "search_fallback" else "low",
+                    "message": f"No issues are currently assigned to epic {target}.",
+                }
+            )
+            if inspection_mode == "search_fallback":
+                _append_next_action(
+                    next_actions,
+                    "If you recently set Epic membership, re-read one issue directly to confirm whether Jira has applied the parent relationship yet.",
+                )
+
+    if entity == "epic" and action in {"set", "clear"} and isinstance(response, dict):
+        issue_count = response.get("issueCount", 0)
+        summary = f"Jira epic {action} returned HTTP {status} for {target} with {issue_count} issues."
+
+    if entity == "rank" and action == "execute" and isinstance(response, dict):
+        issue_count = response.get("issueCount", 0)
+        summary = f"Jira rank execute returned HTTP {status} for {target} with {issue_count} issues."
+        if issue_count == 0:
+            anomalies.append(
+                {
+                    "code": "rank_issue_count_zero",
+                    "severity": "medium",
+                    "message": "Rank execute did not carry any issue keys.",
+                }
+            )
+            _append_next_action(next_actions, "Double-check the issue selection before assuming the backlog order changed.")
+
+    if entity == "board" and action in {"list", "issues", "backlog"} and isinstance(response, dict):
+        items = response.get("values")
+        if not isinstance(items, list):
+            items = response.get("issues") if isinstance(response.get("issues"), list) else []
+        label = "boards" if action == "list" else "issues"
+        summary = f"Jira board {action} returned HTTP {status} for {target} with {len(items)} {label}."
+        if not items:
+            anomalies.append(
+                {
+                    "code": "board_result_empty",
+                    "severity": "medium",
+                    "message": f"Board {action} returned no records for {target}.",
+                }
+            )
+            _append_next_action(next_actions, "Double-check the board id, filters, and sprint state before assuming the board is empty.")
+
     if action == "list" and isinstance(response, list) and not response:
         anomalies.append(
             {
@@ -80,7 +249,20 @@ def _summarize_jira(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]],
         _append_next_action(next_actions, "Review duplicate or historical remote links before assuming a single canonical page.")
 
     if entity == "metadata" and action == "list" and isinstance(response, dict):
-        if not response.get("values") and not response.get("results"):
+        issue_types = response.get("issueTypes")
+        if isinstance(issue_types, list):
+            if issue_types:
+                summary = f"Jira metadata list returned HTTP {status} for {target} with {len(issue_types)} issue types."
+            else:
+                anomalies.append(
+                    {
+                        "code": "metadata_empty",
+                        "severity": "medium",
+                        "message": f"No metadata entries were returned for {target}.",
+                    }
+                )
+                _append_next_action(next_actions, "Double-check the project key and issue type availability on the Jira tenant.")
+        elif not response.get("values") and not response.get("results"):
             anomalies.append(
                 {
                     "code": "metadata_empty",
@@ -89,6 +271,11 @@ def _summarize_jira(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]],
                 }
             )
             _append_next_action(next_actions, "Double-check the project key and issue type availability on the Jira tenant.")
+
+    if entity == "sprint" and action == "remove-items" and isinstance(response, dict):
+        note = response.get("note")
+        if isinstance(note, str) and "backlog" in note.lower():
+            _append_next_action(next_actions, "Confirm the issues now sit in backlog and are no longer assigned to another open sprint.")
 
     return summary, anomalies, next_actions
 

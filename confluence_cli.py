@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections import Counter
 import html
 import json
 import os
@@ -90,6 +91,25 @@ def parse_args() -> argparse.Namespace:
         help="Also backlink Jira keys found in report.traceability.upstream_jira_keys",
     )
     publish.add_argument("--dry-run", action="store_true", help="Print publish plan without sending")
+
+    sprint_review = subparsers.add_parser("publish-sprint-review")
+    sprint_review.add_argument("--board-id", required=True, help="Jira board id")
+    sprint_review.add_argument("--sprint-id", required=True, help="Jira sprint id")
+    sprint_review.add_argument("--project-key", required=True, help="Jira project key for traceability")
+    sprint_review.add_argument("--space-key", help="Confluence space key; falls back to env")
+    sprint_review.add_argument("--title", help="Override page/report title")
+    sprint_review.add_argument("--parent-id", help="Optional parent page id")
+    sprint_review.add_argument("--page-id", help="Explicit page id to update")
+    sprint_review.add_argument("--status", choices=("current", "draft"), default="current")
+    sprint_review.add_argument("--message", default="Updated by agentic-skill-jiraconfluence")
+    sprint_review.add_argument(
+        "--representation",
+        choices=("auto", "atlas_doc_format", "storage"),
+        default="auto",
+        help="Confluence page body representation to publish",
+    )
+    sprint_review.add_argument("--link-jira", action="append", default=[], help="Additional Jira issue key to backlink")
+    sprint_review.add_argument("--dry-run", action="store_true", help="Print publish plan without sending")
 
     spaces = subparsers.add_parser("space-list")
     spaces.add_argument("--format", choices=("json", "summary"), default="summary")
@@ -664,6 +684,155 @@ def resolve_jira_config() -> JiraConfig:
     return JiraConfig(base_url=base_url, user=user, token=token)
 
 
+def fetch_all_jira_issues(config: JiraConfig, path: str, *, fields: list[str], max_results: int = 50) -> list[dict[str, Any]]:
+    start_at = 0
+    issues: list[dict[str, Any]] = []
+    encoded_fields = urllib.parse.quote(",".join(fields), safe=",")
+    while True:
+        separator = "&" if "?" in path else "?"
+        response = jira_request(
+            config,
+            method="GET",
+            path=f"{path}{separator}startAt={start_at}&maxResults={max_results}&fields={encoded_fields}",
+        )
+        if not isinstance(response, dict):
+            break
+        batch = response.get("issues", [])
+        if not isinstance(batch, list) or not batch:
+            break
+        issues.extend(item for item in batch if isinstance(item, dict))
+        total = response.get("total")
+        if not isinstance(total, int):
+            total = len(issues)
+        start_at += len(batch)
+        if start_at >= total:
+            break
+    return issues
+
+
+def build_issue_line(issue: dict[str, Any]) -> str:
+    key = str(issue.get("key") or "<unknown>")
+    fields = issue.get("fields", {})
+    if not isinstance(fields, dict):
+        fields = {}
+    summary = str(fields.get("summary") or "")
+    status = fields.get("status", {})
+    status_name = status.get("name") if isinstance(status, dict) else None
+    assignee = fields.get("assignee", {})
+    assignee_name = assignee.get("displayName") if isinstance(assignee, dict) else None
+    parts = [f"`{key}`"]
+    if summary:
+        parts.append(summary)
+    if status_name:
+        parts.append(f"status: {status_name}")
+    if assignee_name:
+        parts.append(f"assignee: {assignee_name}")
+    return " - ".join(parts)
+
+
+def build_status_breakdown_lines(issues: list[dict[str, Any]]) -> list[str]:
+    counter: Counter[str] = Counter()
+    for issue in issues:
+        fields = issue.get("fields", {})
+        if not isinstance(fields, dict):
+            continue
+        status = fields.get("status", {})
+        status_name = status.get("name") if isinstance(status, dict) else None
+        counter[status_name or "Unknown"] += 1
+    return [f"{status}: {count}" for status, count in sorted(counter.items())]
+
+
+def build_sprint_review_report(
+    *,
+    jira_config: JiraConfig,
+    project_key: str,
+    board_id: str,
+    sprint_id: str,
+    title_override: str | None = None,
+) -> dict[str, Any]:
+    sprint = jira_request(jira_config, method="GET", path=f"/rest/agile/1.0/sprint/{urllib.parse.quote(sprint_id, safe='')}")
+    if not isinstance(sprint, dict):
+        raise SystemExit(f"Could not load Jira sprint {sprint_id}.")
+    issues = fetch_all_jira_issues(
+        jira_config,
+        f"/rest/agile/1.0/sprint/{urllib.parse.quote(sprint_id, safe='')}/issue",
+        fields=["summary", "status", "assignee", "issuetype", "parent", "priority"],
+    )
+    issue_keys = [str(issue.get("key")) for issue in issues if issue.get("key")]
+    status_lines = build_status_breakdown_lines(issues)
+    sprint_name = str(sprint.get("name") or f"Sprint {sprint_id}")
+    sprint_goal = str(sprint.get("goal") or "No sprint goal was recorded in Jira.")
+    sprint_state = str(sprint.get("state") or "unknown")
+    start_date = str(sprint.get("startDate") or "")
+    end_date = str(sprint.get("endDate") or "")
+    complete_date = str(sprint.get("completeDate") or "")
+
+    snapshot_lines = [
+        f"Project: {project_key}",
+        f"Board: {board_id}",
+        f"Sprint: {sprint_name}",
+        f"State: {sprint_state}",
+        f"Goal: {sprint_goal}",
+    ]
+    if start_date:
+        snapshot_lines.append(f"Start Date: {start_date}")
+    if end_date:
+        snapshot_lines.append(f"End Date: {end_date}")
+    if complete_date:
+        snapshot_lines.append(f"Complete Date: {complete_date}")
+
+    report = {
+        "schema_version": "report.v1",
+        "report_id": f"{project_key}-SPRINT-{sprint_id}-REVIEW",
+        "title": title_override or f"{project_key} Sprint Review - {sprint_name}",
+        "report_type": "sprint_review",
+        "arc_id": None,
+        "sprint_id": str(sprint_id),
+        "stage": "Validation & Review",
+        "status": "draft",
+        "summary": {
+            "executive": f"Jira sprint review for {sprint_name} on project {project_key}.",
+            "outcome": f"Sprint {sprint_name} is currently {sprint_state} with {len(issues)} issues captured for review.",
+        },
+        "context": {
+            "goal": sprint_goal,
+            "defaults_chosen": [
+                "Report was synthesized directly from Jira sprint and issue state.",
+                "Status breakdown and item list were generated from the sprint issue window.",
+            ],
+            "blockers": [],
+            "decisions": [],
+        },
+        "sections": [
+            {"title": "Sprint Snapshot", "markdown": "\n".join(f"- {line}" for line in snapshot_lines)},
+            {"title": "Status Breakdown", "markdown": "\n".join(f"- {line}" for line in (status_lines or ["No issues found."]))},
+            {"title": "Sprint Items", "markdown": "\n".join(f"- {build_issue_line(issue)}" for issue in issues) or "- No issues found."},
+        ],
+        "traceability": {
+            "source_path": f"jira://board/{board_id}/sprint/{sprint_id}",
+            "source_type": "jira-sprint-review",
+            "upstream_jira_keys": issue_keys,
+            "confluence_page_id": None,
+            "confluence_page_url": None,
+            "labels": [slugify(project_key), "sprint-review", slugify(sprint_name)],
+        },
+        "publisher": {
+            "render_target": "confluence",
+            "renderer_version": "0.1.0",
+            "publish_mode": "draft",
+        },
+        "artifacts": [
+            {"type": "jira_board", "id": str(board_id)},
+            {"type": "jira_sprint", "id": str(sprint_id), "name": sprint_name},
+        ],
+        "next_actions": [
+            "Review the status mix and unresolved work before closing the sprint narrative.",
+            "Confirm linked Jira issues still represent the intended sprint review scope.",
+        ],
+    }
+    return normalize_report(report, Path.cwd() / f"{project_key.lower()}-sprint-{sprint_id}-review.yaml")
+
+
 def jira_request(
     config: JiraConfig,
     *,
@@ -886,6 +1055,19 @@ def publish_report(args: argparse.Namespace, report: dict[str, Any]) -> None:
             "jira_remote_links": remote_links,
         }
     )
+
+
+def command_publish_sprint_review(args: argparse.Namespace) -> None:
+    jira_config = resolve_jira_config()
+    report = build_sprint_review_report(
+        jira_config=jira_config,
+        project_key=args.project_key,
+        board_id=args.board_id,
+        sprint_id=args.sprint_id,
+        title_override=args.title,
+    )
+    args.link_upstream_jira = True
+    publish_report(args, report)
 
 
 def sync_jira_remote_links(
@@ -1151,6 +1333,10 @@ def main() -> None:
 
     if args.command == "space-link-project":
         command_space_link_project(args)
+        return
+
+    if args.command == "publish-sprint-review":
+        command_publish_sprint_review(args)
         return
 
     report = load_report(args.input)

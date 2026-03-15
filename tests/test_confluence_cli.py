@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import unittest
+from unittest import mock
 
 from _loader import load_module
 
@@ -63,6 +64,65 @@ class ConfluenceCliTest(unittest.TestCase):
                 os.environ.pop("JIRA_BASE_URL", None)
             else:
                 os.environ["JIRA_BASE_URL"] = original_base_url
+
+    def test_build_sprint_review_report_synthesizes_traceable_document(self) -> None:
+        jira_config = confluence_cli.JiraConfig(
+            base_url="https://example.atlassian.net",
+            user="user@example.test",
+            token="token",
+        )
+
+        def fake_jira_request(config, *, method, path, payload=None):
+            self.assertEqual(config, jira_config)
+            if path == "/rest/agile/1.0/sprint/42":
+                return {
+                    "id": 42,
+                    "name": "Validation Sprint",
+                    "state": "closed",
+                    "goal": "Validate sprint reporting",
+                    "startDate": "2026-03-01T00:00:00.000Z",
+                    "endDate": "2026-03-14T00:00:00.000Z",
+                    "completeDate": "2026-03-14T12:00:00.000Z",
+                }
+            if path.startswith("/rest/agile/1.0/sprint/42/issue"):
+                return {
+                    "issues": [
+                        {
+                            "key": "EXAMPLE-1",
+                            "fields": {
+                                "summary": "First item",
+                                "status": {"name": "Done"},
+                                "assignee": {"displayName": "Alice"},
+                            },
+                        },
+                        {
+                            "key": "EXAMPLE-2",
+                            "fields": {
+                                "summary": "Second item",
+                                "status": {"name": "To Do"},
+                            },
+                        },
+                    ],
+                    "total": 2,
+                }
+            raise AssertionError(f"Unexpected Jira path: {path}")
+
+        with mock.patch.object(confluence_cli, "jira_request", side_effect=fake_jira_request):
+            report = confluence_cli.build_sprint_review_report(
+                jira_config=jira_config,
+                project_key="EXAMPLE",
+                board_id="7",
+                sprint_id="42",
+            )
+
+        self.assertEqual(report["report_type"], "sprint_review")
+        self.assertEqual(report["sprint_id"], "42")
+        self.assertEqual(report["traceability"]["upstream_jira_keys"], ["EXAMPLE-1", "EXAMPLE-2"])
+        self.assertEqual(report["traceability"]["source_path"], "jira://board/7/sprint/42")
+        self.assertIn("Validation Sprint", report["title"])
+        self.assertEqual(report["sections"][1]["title"], "Status Breakdown")
+        self.assertIn("Done: 1", report["sections"][1]["markdown"])
+        self.assertIn("`EXAMPLE-1`", report["sections"][2]["markdown"])
 
 
 if __name__ == "__main__":

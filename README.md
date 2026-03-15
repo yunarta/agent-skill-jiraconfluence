@@ -4,7 +4,12 @@
 
 It covers:
 - Jira `project`, `issue`, `sprint`, `field`, `metadata`, and `remotelink` operations
+- Jira sprint membership and lifecycle operations for adding/removing items and starting/completing sprints
+- Jira workflow execution helpers for transitions, assignee updates, issue links, and board/backlog inspection
+- Jira search and discovery helpers for JQL inspection, comments, Epic membership, and backlog ranking
+- Jira-rich text normalization for plain string issue descriptions into ADF-safe payloads
 - Confluence report validation, preview, publish, and space provisioning
+- Confluence sprint review publishing synthesized from live Jira sprint state
 - Jira-aware report publishing with link-back behavior
 - caller-facing `agentic` summaries, decisions, anomalies, and next actions
 
@@ -26,9 +31,17 @@ Current release status:
 | Jira | Sprint operations | Supported |
 | Jira | Field and metadata inspection | Supported |
 | Jira | Issue remote links | Supported |
+| Jira | Workflow transitions | Supported |
+| Jira | Assignment helpers | Supported |
+| Jira | Issue link helpers | Supported |
+| Jira | Board and backlog inspection | Supported |
+| Jira | Search and discovery helpers | Supported |
+| Jira | Comments, Epic helpers, and ranking | Supported |
+| Jira | Plain-text description normalization | Supported |
 | Confluence | Report validate | Supported |
 | Confluence | Render preview | Supported |
 | Confluence | Page publish/update | Supported |
+| Confluence | Sprint review publish from Jira state | Supported |
 | Confluence | Space create/get/list | Supported |
 | Cross-linking | Jira issue -> Confluence page backlink | Supported |
 | Cross-linking | Confluence page -> Jira-linked report content | Supported on validated path |
@@ -62,8 +75,19 @@ This bundle now follows a Diataxis-style documentation split.
 ```bash
 pip install -r agentic-skill-jiraconfluence/requirements.txt
 python3 agentic-skill-jiraconfluence/jira_cli.py project get --resource EXAMPLE
+python3 agentic-skill-jiraconfluence/jira_cli.py sprint add-items --resource 42 --issue EXAMPLE-1 --issue EXAMPLE-2
+python3 agentic-skill-jiraconfluence/jira_cli.py transition list --resource EXAMPLE-1
+python3 agentic-skill-jiraconfluence/jira_cli.py search list --jql "project = EXAMPLE ORDER BY created DESC" --field summary --field status
+python3 agentic-skill-jiraconfluence/jira_cli.py board backlog --resource 7 --query projectKeyOrId=EXAMPLE
+python3 agentic-skill-jiraconfluence/jira_cli.py issue update --resource EXAMPLE-1 --payload '{"fields":{"description":"Plain text description"}}'
 python3 agentic-skill-jiraconfluence/confluence_cli.py validate \
   agentic-skill-jiraconfluence/samples/execution-sync-05.report.yaml
+python3 agentic-skill-jiraconfluence/confluence_cli.py publish-sprint-review \
+  --project-key EXAMPLE \
+  --board-id 7 \
+  --sprint-id 42 \
+  --space-key OCPI4 \
+  --title "Example Sprint Review"
 ```
 
 ## Core Files
@@ -82,6 +106,12 @@ This bundle is optimized for a proven operational path:
 - caller-facing decisions for orchestrating agents
 
 It is not trying to be a complete Atlassian admin SDK.
+
+Sprint safety notes:
+- `sprint remove-items` only proceeds when each requested issue is currently in the target sprint
+- sprint lifecycle verbs are intentionally narrow: `start`, `complete`, and `finish`
+- `epic issues` now uses a search-backed fallback contract on team-managed projects and marks the result as inspectable but bounded
+- plain string Jira issue descriptions are normalized to ADF before write so callers do not need to hand-author Confluence-style rich text
 
 ## Verification
 
