@@ -613,10 +613,46 @@ def send_request(
     route: Route,
     headers: dict[str, str],
     payload: Any | None,
-) -> tuple[int, Any | None]:
+) -> tuple[int, Any | None, str]:
+    def try_search_fallback(original_url: str) -> tuple[int, Any | None, str] | None:
+        if entity != "search" or action != "list" or route.method != "GET":
+            return None
+
+        parsed = urllib.parse.urlsplit(original_url)
+        path = parsed.path
+        if "/rest/api/3/search/jql" not in path and "/rest/api/3/search" not in path:
+            return None
+
+        query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        candidates: list[tuple[str, set[str]]] = []
+
+        if "/rest/api/3/search/jql" in path:
+            candidates.append(("/rest/api/3/search", {"nextPageToken"}))
+        candidates.append(("/rest/api/2/search", {"nextPageToken"}))
+
+        for suffix, drop_params in candidates:
+            candidate_path = path.replace("/rest/api/3/search/jql", suffix).replace("/rest/api/3/search", suffix)
+            filtered_pairs = [(k, v) for (k, v) in query_pairs if k not in drop_params]
+            candidate_query = urllib.parse.urlencode(filtered_pairs)
+            candidate_url = urllib.parse.urlunsplit(
+                (parsed.scheme, parsed.netloc, candidate_path, candidate_query, parsed.fragment)
+            )
+            try:
+                status, body = request_json(candidate_url, route.method, headers, payload)
+                return status, body, candidate_url
+            except urllib.error.HTTPError:
+                continue
+
+        return None
+
     try:
-        return request_json(url, route.method, headers, payload)
+        status, body = request_json(url, route.method, headers, payload)
+        return status, body, url
     except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            fallback = try_search_fallback(url)
+            if fallback is not None:
+                return fallback
         raw = exc.read().decode("utf-8")
         parsed = json.loads(raw) if raw else None
         raise SystemExit(
@@ -1051,7 +1087,7 @@ def main() -> None:
         )
         raise SystemExit(0)
 
-    status, response_body = send_request(
+    status, response_body, effective_endpoint = send_request(
         entity=args.entity,
         action=args.action,
         url=endpoint,
@@ -1075,7 +1111,7 @@ def main() -> None:
         entity=args.entity,
         action=args.action,
         target=target,
-        endpoint=endpoint,
+        endpoint=effective_endpoint,
         dry_run=False,
         method=route.method,
         headers=headers,

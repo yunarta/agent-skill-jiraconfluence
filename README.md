@@ -111,6 +111,7 @@ Sprint safety notes:
 - `sprint remove-items` only proceeds when each requested issue is currently in the target sprint
 - sprint lifecycle verbs are intentionally narrow: `start`, `complete`, and `finish`
 - `epic issues` now uses a search-backed fallback contract on team-managed projects and marks the result as inspectable but bounded
+- `search list` prefers `/rest/api/3/search/jql` when available and falls back to `/rest/api/3/search` or `/rest/api/2/search` on legacy Jira instances that return 404
 - plain string Jira issue descriptions are normalized to ADF before write so callers do not need to hand-author Confluence-style rich text
 
 ## Verification

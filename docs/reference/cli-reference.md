@@ -89,6 +89,7 @@ Search and coordination helpers:
 Rich-text and hierarchy notes:
 - `issue create` and `issue update` normalize plain string `fields.description` into Jira ADF before write
 - `epic issues` uses a search-backed fallback on the validated team-managed path and may return `PARTIAL` with `double_check` guidance when Jira hierarchy inspection remains bounded
+- `search list` may fall back from `/rest/api/3/search/jql` to `/rest/api/3/search` or `/rest/api/2/search` when a Jira instance does not support the enhanced search endpoint
 
 ## Confluence CLI
 
