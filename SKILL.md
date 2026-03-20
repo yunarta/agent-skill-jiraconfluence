@@ -36,6 +36,10 @@ Use this skill when the task needs:
 - `ATL_USER`
 - `ATL_TOKEN`
 
+Optional (admin-gated operations only):
+- `ATL_ADMIN_USER`
+- `ATL_ADMIN_TOKEN`
+
 ### Confluence
 
 - `CONFLUENCE_BASE_URL` or fallback `JIRA_BASE_URL/wiki`
@@ -52,6 +56,7 @@ Use this skill when the task needs:
 2. Prefer safe inspection first
 - use Jira reads or `--dry-run` before writes
 - use `validate` or `render-preview` before publish when the report shape is new
+- destructive Jira actions require explicit confirmation; issue deletion can be blocked by Jira permissions (HTTP 403)
 
 3. Execute from the repo root
 - `python3 jira_cli.py ...`
