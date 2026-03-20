@@ -109,6 +109,10 @@ Supported operation groups:
 - `space-create`
 - `space-link-project`
 
+Publish safety notes:
+- Use `--dry-run` before writes.
+- Use `--overwrite` when a page title already exists (including draft pages) and you want the publish to update the existing page instead of failing.
+
 Typical examples:
 
 ```bash

@@ -88,6 +88,8 @@ Expected result:
 - a page is created or updated in Confluence
 - the response includes page identifiers and a caller-facing summary
 
+If Confluence reports that "a page with this title already exists" and you want to replace it, rerun the publish with `--overwrite`.
+
 ## Step 5: Verify Jira backlinks
 
 List remote links on one of the Jira issues.

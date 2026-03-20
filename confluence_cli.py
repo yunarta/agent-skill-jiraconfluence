@@ -79,6 +79,11 @@ def parse_args() -> argparse.Namespace:
     publish.add_argument("--status", choices=("current", "draft"), default="current")
     publish.add_argument("--message", default="Updated by agentic-skill-jiraconfluence")
     publish.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="When a page with the same title already exists, update it instead of failing the publish.",
+    )
+    publish.add_argument(
         "--representation",
         choices=("auto", "atlas_doc_format", "storage"),
         default="auto",
@@ -102,6 +107,11 @@ def parse_args() -> argparse.Namespace:
     sprint_review.add_argument("--page-id", help="Explicit page id to update")
     sprint_review.add_argument("--status", choices=("current", "draft"), default="current")
     sprint_review.add_argument("--message", default="Updated by agentic-skill-jiraconfluence")
+    sprint_review.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="When a page with the same title already exists, update it instead of failing the publish.",
+    )
     sprint_review.add_argument(
         "--representation",
         choices=("auto", "atlas_doc_format", "storage"),
@@ -952,18 +962,95 @@ def render_project_homepage(project_key: str, project_url: str) -> str:
     )
 
 
-def find_page_by_title(config: ConfluenceConfig, space_id: str, title: str) -> dict[str, Any] | None:
+def find_page_by_title_v2(
+    config: ConfluenceConfig,
+    space_id: str,
+    title: str,
+    *,
+    status: str = "current",
+) -> dict[str, Any] | None:
     title_q = urllib.parse.quote(title, safe="")
     response = confluence_request(
         config,
         method="GET",
-        path=f"/api/v2/spaces/{space_id}/pages?limit=25&status=current&title={title_q}&body-format=storage",
+        path=f"/api/v2/spaces/{space_id}/pages?limit=25&status={urllib.parse.quote(status, safe='')}&title={title_q}&body-format=storage",
     )
     results = response.get("results", []) if isinstance(response, dict) else []
     for page in results:
         if page.get("title") == title:
             return page
     return None
+
+
+def find_page_by_title_v1(
+    config: ConfluenceConfig,
+    space_key: str,
+    title: str,
+    *,
+    status: str = "current",
+) -> dict[str, Any] | None:
+    params = urllib.parse.urlencode(
+        {
+            "spaceKey": space_key,
+            "title": title,
+            "status": status,
+            "expand": "version",
+        }
+    )
+    response = confluence_request(config, method="GET", path=f"/rest/api/content?{params}")
+    results = response.get("results", []) if isinstance(response, dict) else []
+    for item in results:
+        if item.get("type") == "page" and item.get("title") == title:
+            return item
+    return None
+
+
+def find_page_by_title(
+    config: ConfluenceConfig,
+    *,
+    space_id: str,
+    space_key: str,
+    title: str,
+    include_drafts: bool = False,
+) -> dict[str, Any] | None:
+    page = find_page_by_title_v1(config, space_key, title, status="current")
+    if not page and include_drafts:
+        page = find_page_by_title_v1(config, space_key, title, status="draft")
+    if page:
+        return page
+
+    page = find_page_by_title_v2(config, space_id, title, status="current")
+    if not page and include_drafts:
+        page = find_page_by_title_v2(config, space_id, title, status="draft")
+    return page
+
+
+def ensure_page_version(config: ConfluenceConfig, page: dict[str, Any]) -> dict[str, Any]:
+    version = page.get("version")
+    if isinstance(version, dict) and isinstance(version.get("number"), int):
+        return page
+    page_id = page.get("id")
+    if not page_id:
+        return page
+    hydrated = confluence_request(config, method="GET", path=f"/api/v2/pages/{page_id}")
+    if isinstance(hydrated, dict):
+        hydrated_version = hydrated.get("version")
+        if isinstance(hydrated_version, dict) and isinstance(hydrated_version.get("number"), int):
+            return hydrated
+    hydrated_v1 = confluence_request(config, method="GET", path=f"/rest/api/content/{page_id}?expand=version")
+    if isinstance(hydrated_v1, dict):
+        hydrated_version = hydrated_v1.get("version")
+        if isinstance(hydrated_version, dict) and isinstance(hydrated_version.get("number"), int):
+            return hydrated_v1
+    return page
+
+
+def is_confluence_title_conflict(status: int | None, response: Any | None) -> bool:
+    if status != 400 or not isinstance(response, dict):
+        return False
+    title = str(response.get("title") or "").lower()
+    detail = str(response.get("detail") or "").lower()
+    return "title already exists" in title or "same title" in detail
 
 
 def publish_report(args: argparse.Namespace, report: dict[str, Any]) -> None:
@@ -980,7 +1067,15 @@ def publish_report(args: argparse.Namespace, report: dict[str, Any]) -> None:
     if args.page_id:
         existing_page = confluence_request(config, method="GET", path=f"/api/v2/pages/{args.page_id}")
     else:
-        existing_page = find_page_by_title(config, str(space["id"]), page_title)
+        existing_page = find_page_by_title(
+            config,
+            space_id=str(space["id"]),
+            space_key=config.space_key,
+            title=page_title,
+            include_drafts=bool(args.overwrite),
+        )
+    if existing_page and isinstance(existing_page, dict):
+        existing_page = ensure_page_version(config, existing_page)
 
     if args.dry_run:
         emit_json(
@@ -1010,17 +1105,70 @@ def publish_report(args: argparse.Namespace, report: dict[str, Any]) -> None:
     }
 
     if existing_page:
-        payload["id"] = existing_page["id"]
-        payload["version"] = {
-            "number": int(existing_page["version"]["number"]) + 1,
+        current_version = existing_page.get("version", {}).get("number") if isinstance(existing_page, dict) else None
+        if not isinstance(current_version, int):
+            raise SystemExit(f"Confluence page {existing_page.get('id', '<unknown>')} is missing version metadata required for update.")
+        update_payload = dict(payload)
+        update_payload["id"] = existing_page["id"]
+        update_payload["version"] = {
+            "number": current_version + 1,
             "message": args.message,
         }
-        response = confluence_request(config, method="PUT", path=f"/api/v2/pages/{existing_page['id']}", payload=payload)
+        response = confluence_request(
+            config,
+            method="PUT",
+            path=f"/api/v2/pages/{existing_page['id']}",
+            payload=update_payload,
+        )
     else:
         payload["spaceId"] = str(space["id"])
         if args.parent_id:
             payload["parentId"] = str(args.parent_id)
-        response = confluence_request(config, method="POST", path="/api/v2/pages", payload=payload)
+        try:
+            response = confluence_request(config, method="POST", path="/api/v2/pages", payload=payload)
+        except SystemExit as exc:
+            code = exc.code
+            if isinstance(code, int) or not args.overwrite:
+                raise
+            _, status, create_response = parse_exit_payload(str(code))
+            if not is_confluence_title_conflict(status, create_response):
+                raise
+            existing_page = find_page_by_title(
+                config,
+                space_id=str(space["id"]),
+                space_key=config.space_key,
+                title=page_title,
+                include_drafts=True,
+            )
+            if not existing_page:
+                raise SystemExit(
+                    json.dumps(
+                        {
+                            "message": "Publish failed: Confluence returned a title conflict but the page could not be resolved for update.",
+                            "status": status,
+                            "response": create_response,
+                        },
+                        indent=2,
+                    )
+                ) from exc
+            existing_page = ensure_page_version(config, existing_page)
+            current_version = existing_page.get("version", {}).get("number") if isinstance(existing_page, dict) else None
+            if not isinstance(current_version, int):
+                raise SystemExit(f"Confluence page {existing_page.get('id', '<unknown>')} is missing version metadata required for update.") from exc
+            update_payload = dict(payload)
+            update_payload.pop("spaceId", None)
+            update_payload.pop("parentId", None)
+            update_payload["id"] = existing_page["id"]
+            update_payload["version"] = {
+                "number": current_version + 1,
+                "message": args.message,
+            }
+            response = confluence_request(
+                config,
+                method="PUT",
+                path=f"/api/v2/pages/{existing_page['id']}",
+                payload=update_payload,
+            )
 
     page_url = config.base_url.rstrip("/") + response.get("_links", {}).get("webui", "")
     jira_link_keys = list(args.link_jira)

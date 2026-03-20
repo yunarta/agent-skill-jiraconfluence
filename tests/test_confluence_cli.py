@@ -124,6 +124,43 @@ class ConfluenceCliTest(unittest.TestCase):
         self.assertIn("Done: 1", report["sections"][1]["markdown"])
         self.assertIn("`EXAMPLE-1`", report["sections"][2]["markdown"])
 
+    def test_is_confluence_title_conflict_detects_duplicate_title_error(self) -> None:
+        response = {
+            "code": "BAD_REQUEST",
+            "title": "A page with this title already exists",
+            "detail": "A page already exists with the same TITLE in this space",
+        }
+        self.assertTrue(confluence_cli.is_confluence_title_conflict(400, response))
+
+    def test_find_page_by_title_can_include_drafts_when_requested(self) -> None:
+        config = confluence_cli.ConfluenceConfig(
+            base_url="https://example.atlassian.net/wiki",
+            user="user@example.test",
+            token="token",
+            space_key="EXAMPLE",
+        )
+
+        def fake_confluence_request(_config, *, method, path, payload=None):
+            self.assertEqual(_config, config)
+            self.assertEqual(method, "GET")
+            self.assertIsNone(payload)
+            if path.startswith("/rest/api/content?") and "status=current" in path:
+                return {"results": []}
+            if path.startswith("/rest/api/content?") and "status=draft" in path:
+                return {"results": [{"type": "page", "id": "123", "title": "Example", "version": {"number": 2}}]}
+            raise AssertionError(f"Unexpected Confluence request path: {path}")
+
+        with mock.patch.object(confluence_cli, "confluence_request", side_effect=fake_confluence_request):
+            page = confluence_cli.find_page_by_title(
+                config,
+                space_id="7",
+                space_key="EXAMPLE",
+                title="Example",
+                include_drafts=True,
+            )
+        self.assertIsNotNone(page)
+        self.assertEqual(page["id"], "123")
+
 
 if __name__ == "__main__":
     unittest.main()
