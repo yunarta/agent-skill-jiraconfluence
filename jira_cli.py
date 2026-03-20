@@ -119,6 +119,10 @@ ROUTES: dict[str, dict[str, Route]] = {
     "rank": {
         "execute": Route("PUT", "/rest/agile/1.0/issue/rank", False, False),
     },
+    "projectrole": {
+        "list": Route("GET", "/rest/api/3/project/{resource}/role", True, False),
+        "add-user": Route("POST", "/rest/api/3/project/{resource}/role/{roleId}", True, True, ("roleId",)),
+    },
 }
 
 
@@ -154,6 +158,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--comment-id", help="Jira comment id for comment delete")
     parser.add_argument("--dry-run", action="store_true", help="Print request details without sending")
     parser.add_argument("--confirm", action="store_true", help="Required for destructive actions")
+    parser.add_argument(
+        "--admin-mode",
+        action="store_true",
+        help="Use ATL_ADMIN_USER/ATL_ADMIN_TOKEN instead of ATL_USER/ATL_TOKEN for privileged operations.",
+    )
+    parser.add_argument(
+        "--admin-approve",
+        action="store_true",
+        help="Required to enable admin-mode or permission-changing operations.",
+    )
+    parser.add_argument("--role-id", help="Jira project role id (used by projectrole add-user)")
     return parser.parse_args()
 
 
@@ -282,6 +297,15 @@ def enforce_guardrails(args: argparse.Namespace) -> None:
         raise SystemExit("Delete requires --confirm")
     if args.entity == "project" and args.action in {"create", "delete"} and not args.confirm:
         raise SystemExit("Project create/delete requires --confirm")
+    if args.admin_mode and not args.admin_approve:
+        raise SystemExit("Admin mode requires --admin-approve")
+    if args.entity == "projectrole" and args.action == "add-user":
+        if not args.confirm:
+            raise SystemExit("Project role mutation requires --confirm")
+        if not args.admin_mode:
+            raise SystemExit("Project role mutation requires --admin-mode")
+        if not args.admin_approve:
+            raise SystemExit("Project role mutation requires --admin-approve")
 
 
 def parse_issue_keys(raw_items: list[str]) -> list[str]:
@@ -1035,6 +1059,22 @@ def prepare_custom_route_request(
         endpoint = build_url(base_url, route, None, {})
         return route, endpoint, target, {}, payload, response_context
 
+    if args.entity == "projectrole":
+        if args.action == "add-user":
+            if not args.role_id:
+                raise SystemExit("projectrole add-user requires --role-id")
+            if not args.account_id:
+                raise SystemExit("projectrole add-user requires --account-id")
+            query = dict(query)
+            query["roleId"] = args.role_id
+            payload = {"user": [args.account_id]}
+            endpoint = build_url(base_url, route, args.resource, query)
+            target = f"{args.resource or '<project>'}/role/{args.role_id}"
+            response_context = {"actorAccountId": args.account_id}
+            return route, endpoint, target, query, payload, response_context
+        endpoint = build_url(base_url, route, args.resource, query)
+        return route, endpoint, target, query, None, response_context
+
     endpoint = build_url(base_url, route, args.resource, query)
     return route, endpoint, target, query, None, response_context
 
@@ -1045,8 +1085,12 @@ def main() -> None:
     enforce_guardrails(args)
 
     base_url = require_env("JIRA_BASE_URL")
-    user = require_env("ATL_USER")
-    token = require_env("ATL_TOKEN")
+    if args.admin_mode:
+        user = require_env("ATL_ADMIN_USER")
+        token = require_env("ATL_ADMIN_TOKEN")
+    else:
+        user = require_env("ATL_USER")
+        token = require_env("ATL_TOKEN")
     read_headers = build_headers(user, token, False)
     write_headers = build_headers(user, token, True)
 

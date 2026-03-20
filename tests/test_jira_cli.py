@@ -280,6 +280,44 @@ class JiraCliTest(unittest.TestCase):
             },
         )
 
+    def test_enforce_guardrails_requires_confirm_for_delete(self) -> None:
+        args = jira_cli.argparse.Namespace(entity="issue", action="delete", confirm=False, admin_mode=False, admin_approve=False)
+        with self.assertRaises(SystemExit):
+            jira_cli.enforce_guardrails(args)
+
+    def test_enforce_guardrails_requires_admin_approve_for_admin_mode(self) -> None:
+        args = jira_cli.argparse.Namespace(entity="issue", action="get", confirm=True, admin_mode=True, admin_approve=False)
+        with self.assertRaises(SystemExit):
+            jira_cli.enforce_guardrails(args)
+
+    def test_enforce_guardrails_requires_admin_mode_for_projectrole_mutation(self) -> None:
+        args = jira_cli.argparse.Namespace(entity="projectrole", action="add-user", confirm=True, admin_mode=False, admin_approve=True)
+        with self.assertRaises(SystemExit):
+            jira_cli.enforce_guardrails(args)
+
+    def test_prepare_custom_route_request_builds_projectrole_add_user_payload(self) -> None:
+        args = jira_cli.argparse.Namespace(
+            entity="projectrole",
+            action="add-user",
+            resource="EXAMPLE",
+            role_id="10002",
+            account_id="557058:example",
+        )
+        route = jira_cli.resolve_route("projectrole", "add-user")
+        effective_route, endpoint, target, query, payload, response_context = jira_cli.prepare_custom_route_request(
+            args,
+            base_url="https://example.atlassian.net",
+            read_headers={"Accept": "application/json"},
+            route=route,
+            query={},
+        )
+        self.assertEqual(effective_route.method, "POST")
+        self.assertEqual(endpoint, "https://example.atlassian.net/rest/api/3/project/EXAMPLE/role/10002")
+        self.assertEqual(target, "EXAMPLE/role/10002")
+        self.assertEqual(query, {"roleId": "10002"})
+        self.assertEqual(payload, {"user": ["557058:example"]})
+        self.assertEqual(response_context, {"actorAccountId": "557058:example"})
+
 
 if __name__ == "__main__":
     unittest.main()

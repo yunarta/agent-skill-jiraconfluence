@@ -25,6 +25,7 @@ Supported entity groups:
 - `search`
 - `epic`
 - `rank`
+- `projectrole`
 
 Typical examples:
 
@@ -85,6 +86,8 @@ Search and coordination helpers:
 - `epic set`
 - `epic clear`
 - `rank execute`
+- `projectrole list`
+- `projectrole add-user` (admin-mode only)
 
 Rich-text and hierarchy notes:
 - `issue create` and `issue update` normalize plain string `fields.description` into Jira ADF before write
