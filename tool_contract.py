@@ -38,6 +38,38 @@ def _append_next_action(next_actions: list[str], text: str) -> None:
         next_actions.append(text)
 
 
+def _search_pagination(response: dict[str, Any]) -> dict[str, Any]:
+    issues = response.get("issues", [])
+    returned = len(issues) if isinstance(issues, list) else 0
+
+    next_page_token = response.get("nextPageToken")
+    is_last = response.get("isLast")
+    start_at = response.get("startAt")
+    total = response.get("total")
+    max_results = response.get("maxResults")
+
+    has_more: bool | None = None
+    if isinstance(next_page_token, str) and next_page_token:
+        has_more = True
+    elif isinstance(is_last, bool):
+        has_more = not is_last
+    elif isinstance(total, int) and isinstance(start_at, int):
+        has_more = (start_at + returned) < total
+
+    pagination: dict[str, Any] = {"returned": returned}
+    if has_more is not None:
+        pagination["has_more"] = has_more
+    if isinstance(total, int):
+        pagination["total"] = total
+    if isinstance(start_at, int):
+        pagination["start_at"] = start_at
+    if isinstance(max_results, int):
+        pagination["max_results"] = max_results
+    if isinstance(next_page_token, str) and next_page_token:
+        pagination["next_page_token_present"] = True
+    return pagination
+
+
 def _summarize_jira(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]], list[str]]:
     entity = payload.get("entity", "unknown")
     action = payload.get("action", "unknown")
@@ -145,8 +177,16 @@ def _summarize_jira(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]],
         summary = f"Jira comment delete returned HTTP {status} for {target}."
 
     if entity == "search" and action == "list" and isinstance(response, dict):
+        pagination = _search_pagination(response)
+        returned = pagination.get("returned", 0)
+        has_more = pagination.get("has_more")
+        suffix = ""
+        if has_more is True:
+            suffix = " More results are available."
+        elif has_more is False:
+            suffix = " End of results."
+        summary = f"Jira search list returned HTTP {status} with {returned} issues.{suffix}"
         issues = response.get("issues", [])
-        summary = f"Jira search list returned HTTP {status} with {len(issues)} issues."
         if not issues:
             anomalies.append(
                 {
@@ -159,6 +199,14 @@ def _summarize_jira(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]],
         next_page_token = response.get("nextPageToken")
         if next_page_token:
             _append_next_action(next_actions, "Use --next-page-token to continue the search result window if you need more issues.")
+        if has_more and not next_page_token:
+            start_at = response.get("startAt")
+            total = response.get("total")
+            if isinstance(start_at, int) and isinstance(total, int) and returned:
+                _append_next_action(
+                    next_actions,
+                    f"Use --query startAt={start_at + returned} to fetch the next page when nextPageToken is not available.",
+                )
 
     if entity == "epic" and action == "get" and isinstance(response, dict):
         epic_name = response.get("name") or response.get("summary") or target
@@ -375,6 +423,10 @@ def attach_agentic_contract(tool: str, payload: dict[str, Any]) -> dict[str, Any
         "anomalies": anomalies,
         "next_actions": next_actions,
     }
+    if tool == "jira" and enriched.get("entity") == "search" and enriched.get("action") == "list":
+        response = enriched.get("response")
+        if isinstance(response, dict):
+            enriched["agentic"]["pagination"] = _search_pagination(response)
     return enriched
 
 

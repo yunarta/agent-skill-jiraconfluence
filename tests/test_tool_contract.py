@@ -66,6 +66,40 @@ class ToolContractTest(unittest.TestCase):
         self.assertEqual(enriched["agentic"]["decision"], "double_check")
         self.assertTrue(enriched["agentic"]["anomalies"])
 
+    def test_jira_search_pagination_detects_more_results(self) -> None:
+        payload = {
+            "entity": "search",
+            "action": "list",
+            "target": "jql",
+            "endpoint": "https://example.test/rest/api/3/search/jql",
+            "method": "GET",
+            "mode": "live",
+            "status": 200,
+            "response": {"issues": [{"id": "1"}], "nextPageToken": "token", "isLast": False},
+            "headers": {"Accept": "application/json"},
+        }
+        enriched = tool_contract.attach_agentic_contract("jira", payload)
+        pagination = enriched["agentic"].get("pagination", {})
+        self.assertEqual(pagination.get("returned"), 1)
+        self.assertTrue(pagination.get("has_more"))
+
+    def test_jira_search_pagination_detects_end_of_results(self) -> None:
+        payload = {
+            "entity": "search",
+            "action": "list",
+            "target": "jql",
+            "endpoint": "https://example.test/rest/api/3/search/jql",
+            "method": "GET",
+            "mode": "live",
+            "status": 200,
+            "response": {"issues": [{"id": "1"}], "isLast": True},
+            "headers": {"Accept": "application/json"},
+        }
+        enriched = tool_contract.attach_agentic_contract("jira", payload)
+        pagination = enriched["agentic"].get("pagination", {})
+        self.assertEqual(pagination.get("returned"), 1)
+        self.assertFalse(pagination.get("has_more"))
+
     def test_jira_comment_create_summary_mentions_comment_id(self) -> None:
         payload = {
             "entity": "comment",
